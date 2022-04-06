@@ -1,0 +1,26 @@
+[project]
+name = "urdf-spherizer"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "neka-nat", email = "nekanat.stock@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "numpy",
+    "rerun-sdk",
+    "trimesh",
+]
+
+[project.scripts]
+urdf-spherizer = "urdf_spherizer:main"
+
+[tool.maturin]
+module-name = "urdf_spherizer._core"
+python-packages = ["urdf_spherizer"]
+python-source = "src"
+
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
