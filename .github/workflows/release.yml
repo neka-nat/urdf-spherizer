@@ -21,7 +21,7 @@ jobs:
             args: --skip-existing
             manylinux: auto
           - os: macos-latest
-            args: --skip-existing --universal2
+            args: --skip-existing -- --universal2
             manylinux: auto
     steps:
       - uses: actions/checkout@v4
