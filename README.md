@@ -25,3 +25,5 @@ uvx urdf-spherizer path/to/model.urdf --package-dir my_robot=/path/to/my_robot
 
 Results
 --------
+
+https://github.com/user-attachments/assets/494a6be0-eeb3-41ec-a807-08dbced9c3a8
