@@ -1,6 +1,9 @@
 urdf-spherizer
 ==============
 
+[![PyPI version](https://badge.fury.io/py/urdf-spherizer.svg)](https://badge.fury.io/py/urdf-spherizer)
+
+
 Convert URDF visual geometry into conservative sphere-based collision geometry.
 
 Usage
