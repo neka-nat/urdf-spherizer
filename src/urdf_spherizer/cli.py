@@ -230,25 +230,55 @@ def compute_link_transforms(root_elem: ET.Element) -> Dict[str, np.ndarray]:
     return transforms
 
 
+def clamp01(value: float) -> float:
+    if value < 0.0:
+        return 0.0
+    if value > 1.0:
+        return 1.0
+    return value
+
+
 def log_link_viz(
-    rr_module, link_name: str, vertices: np.ndarray, faces: np.ndarray, spheres
+    rr_module,
+    link_name: str,
+    vertices: np.ndarray,
+    faces: np.ndarray,
+    spheres,
+    mesh_alpha: float,
+    sphere_alpha: float,
 ) -> None:
+    mesh_alpha = clamp01(mesh_alpha)
+    sphere_alpha = clamp01(sphere_alpha)
+    mesh_normals = None
+    try:
+        mesh = trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
+        if mesh.vertex_normals is not None and len(mesh.vertex_normals) == len(vertices):
+            mesh_normals = np.asarray(mesh.vertex_normals, dtype=np.float32)
+    except Exception:
+        mesh_normals = None
+    albedo_factor = np.array([0.8, 0.8, 0.8, mesh_alpha], dtype=np.float32)
     rr_module.log(
         f"link/{link_name}/visual",
         rr_module.Mesh3D(
             vertex_positions=vertices,
             triangle_indices=faces,
+            vertex_normals=mesh_normals,
+            albedo_factor=albedo_factor,
         ),
     )
     if spheres:
         centers = np.asarray([s[0] for s in spheres], dtype=np.float32)
         radii = np.asarray([s[1] for s in spheres], dtype=np.float32)
         half_sizes = np.repeat(radii[:, None], 3, axis=1)
+        sphere_color = np.array([0.2, 0.6, 1.0, sphere_alpha], dtype=np.float32)
+        colors = np.repeat(sphere_color[None, :], centers.shape[0], axis=0)
         rr_module.log(
             f"link/{link_name}/spheres",
             rr_module.Ellipsoids3D(
                 centers=centers,
                 half_sizes=half_sizes,
+                colors=colors,
+                fill_mode=rr_module.components.FillMode.Solid,
             ),
         )
 
@@ -295,6 +325,18 @@ def main() -> None:
         "--viz",
         action="store_true",
         help="Visualize results with rerun",
+    )
+    parser.add_argument(
+        "--viz-mesh-alpha",
+        type=float,
+        default=1.0,
+        help="Alpha for visual mesh in rerun (0.0-1.0)",
+    )
+    parser.add_argument(
+        "--viz-sphere-alpha",
+        type=float,
+        default=0.25,
+        help="Alpha for visual spheres in rerun (0.0-1.0)",
     )
     args = parser.parse_args()
 
@@ -348,7 +390,15 @@ def main() -> None:
             else:
                 viz_vertices = vertices
                 viz_spheres = spheres
-            log_link_viz(rr_module, link_name, viz_vertices, faces, viz_spheres)
+            log_link_viz(
+                rr_module,
+                link_name,
+                viz_vertices,
+                faces,
+                viz_spheres,
+                args.viz_mesh_alpha,
+                args.viz_sphere_alpha,
+            )
 
     ET.indent(tree, space="  ")
     tree.write(output_path, encoding="utf-8", xml_declaration=True)
