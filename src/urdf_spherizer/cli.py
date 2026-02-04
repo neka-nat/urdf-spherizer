@@ -264,14 +264,20 @@ def main() -> None:
     parser.add_argument(
         "--max-spheres",
         type=int,
-        default=16,
+        default=64,
         help="Maximum spheres per link",
     )
     parser.add_argument(
         "--min-gain-ratio",
         type=float,
         default=0.02,
-        help="Stop splitting when relative gain falls below this ratio",
+        help="Stop splitting when relative gain falls below this ratio (combined with --margin)",
+    )
+    parser.add_argument(
+        "--margin",
+        type=float,
+        default=0.0,
+        help="Stop splitting when absolute gain falls below this distance (meters)",
     )
     parser.add_argument(
         "--epsilon",
@@ -320,8 +326,9 @@ def main() -> None:
             vertices,
             faces,
             args.max_spheres,
-            args.min_gain_ratio,
-            args.epsilon,
+            min_gain_ratio=args.min_gain_ratio,
+            epsilon=args.epsilon,
+            min_gain_abs=args.margin,
         )
         spheres = [(list(center), float(radius)) for center, radius in spheres]
         replace_link_collisions(link, spheres)

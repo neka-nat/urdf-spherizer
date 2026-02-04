@@ -1,6 +1,8 @@
 use numpy::PyReadonlyArray2;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
 
 #[derive(Clone, Copy, Debug)]
 struct Vec3 {
@@ -129,6 +131,26 @@ struct Cluster {
     sphere: Sphere,
 }
 
+impl PartialEq for Cluster {
+    fn eq(&self, other: &Self) -> bool {
+        self.sphere.radius == other.sphere.radius
+    }
+}
+
+impl Eq for Cluster {}
+
+impl PartialOrd for Cluster {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        self.sphere.radius.partial_cmp(&other.sphere.radius)
+    }
+}
+
+impl Ord for Cluster {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.partial_cmp(other).unwrap_or(Ordering::Equal)
+    }
+}
+
 #[derive(Clone, Debug)]
 struct SplitEval {
     left_tris: Vec<usize>,
@@ -136,19 +158,15 @@ struct SplitEval {
     left_sphere: Sphere,
     right_sphere: Sphere,
     gain_ratio: f32,
+    gain_abs: f32,
+    cost: f32,
 }
 
-fn bounding_sphere(points: &[Vec3], epsilon: f32) -> Sphere {
-    if points.is_empty() {
-        return Sphere {
-            center: Vec3::zero(),
-            radius: 0.0,
-        };
-    }
-    let mut p0 = points[0];
+fn ritter_sphere(points: &[Vec3], start: Vec3, epsilon: f32) -> Sphere {
+    let mut p0 = start;
     let mut p1 = p0;
     let mut max_dist = 0.0_f32;
-    for &p in points.iter().skip(1) {
+    for &p in points.iter() {
         let d = p0.distance(p);
         if d > max_dist {
             max_dist = d;
@@ -185,6 +203,50 @@ fn bounding_sphere(points: &[Vec3], epsilon: f32) -> Sphere {
     }
 }
 
+fn bounding_sphere(points: &[Vec3], epsilon: f32) -> Sphere {
+    if points.is_empty() {
+        return Sphere {
+            center: Vec3::zero(),
+            radius: 0.0,
+        };
+    }
+    let mut min_x = points[0];
+    let mut max_x = points[0];
+    let mut min_y = points[0];
+    let mut max_y = points[0];
+    let mut min_z = points[0];
+    let mut max_z = points[0];
+    for &p in points.iter().skip(1) {
+        if p.x < min_x.x {
+            min_x = p;
+        }
+        if p.x > max_x.x {
+            max_x = p;
+        }
+        if p.y < min_y.y {
+            min_y = p;
+        }
+        if p.y > max_y.y {
+            max_y = p;
+        }
+        if p.z < min_z.z {
+            min_z = p;
+        }
+        if p.z > max_z.z {
+            max_z = p;
+        }
+    }
+    let seeds = [min_x, max_x, min_y, max_y, min_z, max_z];
+    let mut best = ritter_sphere(points, seeds[0], epsilon);
+    for &seed in seeds.iter().skip(1) {
+        let candidate = ritter_sphere(points, seed, epsilon);
+        if candidate.radius < best.radius {
+            best = candidate;
+        }
+    }
+    best
+}
+
 fn collect_points(tris: &[usize], triangles: &[Triangle], vertices: &[Vec3]) -> Vec<Vec3> {
     let mut points = Vec::with_capacity(tris.len() * 3);
     for &tri_idx in tris {
@@ -206,71 +268,73 @@ fn cluster_sphere(
     bounding_sphere(&points, epsilon)
 }
 
-fn split_cluster(tris: &[usize], triangles: &[Triangle]) -> Option<(Vec<usize>, Vec<usize>)> {
-    if tris.len() < 2 {
-        return None;
-    }
-    let mut min = triangles[tris[0]].centroid;
-    let mut max = min;
-    for &tri_idx in tris.iter().skip(1) {
-        let c = triangles[tri_idx].centroid;
-        min = min.min(c);
-        max = max.max(c);
-    }
-    let range = max - min;
-    let axis = if range.x >= range.y && range.x >= range.z {
-        0
-    } else if range.y >= range.z {
-        1
-    } else {
-        2
-    };
-    let mut sorted = tris.to_vec();
-    sorted.sort_by(|&a, &b| {
-        triangles[a]
-            .centroid
-            .axis(axis)
-            .partial_cmp(&triangles[b].centroid.axis(axis))
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    let mid = sorted.len() / 2;
-    if mid == 0 || mid == sorted.len() {
-        return None;
-    }
-    let left = sorted[..mid].to_vec();
-    let right = sorted[mid..].to_vec();
-    Some((left, right))
-}
+const CUT_RATIOS: [f32; 7] = [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8];
 
-fn evaluate_split(
+fn evaluate_best_split(
     tris: &[usize],
     triangles: &[Triangle],
     vertices: &[Vec3],
     parent_radius: f32,
     epsilon: f32,
 ) -> Option<SplitEval> {
-    let (left_tris, right_tris) = split_cluster(tris, triangles)?;
-    let left_sphere = cluster_sphere(&left_tris, triangles, vertices, epsilon);
-    let right_sphere = cluster_sphere(&right_tris, triangles, vertices, epsilon);
-    let child_radius = left_sphere.radius.max(right_sphere.radius);
-    if parent_radius <= 0.0 {
-        return Some(SplitEval {
-            left_tris,
-            right_tris,
-            left_sphere,
-            right_sphere,
-            gain_ratio: 0.0,
-        });
+    if tris.len() < 2 {
+        return None;
     }
-    let gain = parent_radius - child_radius;
-    let gain_ratio = (gain / parent_radius).max(0.0);
-    Some(SplitEval {
-        left_tris,
-        right_tris,
-        left_sphere,
-        right_sphere,
-        gain_ratio,
-    })
+    let mut best: Option<SplitEval> = None;
+    let len = tris.len();
+    for axis in 0..3 {
+        let mut sorted = tris.to_vec();
+        sorted.sort_by(|&a, &b| {
+            triangles[a]
+                .centroid
+                .axis(axis)
+                .partial_cmp(&triangles[b].centroid.axis(axis))
+                .unwrap_or(Ordering::Equal)
+        });
+        let mut last_mid: Option<usize> = None;
+        for &ratio in CUT_RATIOS.iter() {
+            let mid = ((len as f32) * ratio).round() as usize;
+            if mid == 0 || mid >= len {
+                continue;
+            }
+            if Some(mid) == last_mid {
+                continue;
+            }
+            last_mid = Some(mid);
+            let left_slice = &sorted[..mid];
+            let right_slice = &sorted[mid..];
+            let left_sphere = cluster_sphere(left_slice, triangles, vertices, epsilon);
+            let right_sphere = cluster_sphere(right_slice, triangles, vertices, epsilon);
+            let child_radius = left_sphere.radius.max(right_sphere.radius);
+            let gain_abs = (parent_radius - child_radius).max(0.0);
+            let gain_ratio = if parent_radius > 0.0 {
+                (gain_abs / parent_radius).max(0.0)
+            } else {
+                0.0
+            };
+            let candidate = SplitEval {
+                left_tris: left_slice.to_vec(),
+                right_tris: right_slice.to_vec(),
+                left_sphere,
+                right_sphere,
+                gain_ratio,
+                gain_abs,
+                cost: child_radius,
+            };
+            let should_take = match &best {
+                None => true,
+                Some(current) => {
+                    candidate.cost < current.cost
+                        || (candidate.cost == current.cost
+                            && candidate.gain_ratio > current.gain_ratio)
+                }
+            };
+            if should_take {
+                best = Some(candidate);
+            }
+        }
+    }
+    best
 }
 
 fn spherize_mesh_impl(
@@ -278,63 +342,61 @@ fn spherize_mesh_impl(
     triangles: &[Triangle],
     max_spheres: usize,
     min_gain_ratio: f32,
+    min_gain_abs: f32,
     epsilon: f32,
 ) -> Vec<Sphere> {
     if triangles.is_empty() || max_spheres == 0 {
         return Vec::new();
     }
-    let mut clusters = Vec::new();
+    let mut heap = BinaryHeap::new();
     let all_tris: Vec<usize> = (0..triangles.len()).collect();
     let root_sphere = cluster_sphere(&all_tris, triangles, vertices, epsilon);
-    clusters.push(Cluster {
+    heap.push(Cluster {
         tris: all_tris,
         sphere: root_sphere,
     });
 
     let min_gain_ratio = min_gain_ratio.max(0.0);
+    let min_gain_abs = min_gain_abs.max(0.0);
+    let mut frozen: Vec<Cluster> = Vec::new();
 
-    while clusters.len() < max_spheres {
-        let mut best_index: Option<usize> = None;
-        let mut best_split: Option<SplitEval> = None;
-        let mut best_gain_ratio = min_gain_ratio;
-
-        for (idx, cluster) in clusters.iter().enumerate() {
-            if cluster.tris.len() < 2 {
-                continue;
-            }
-            if let Some(split) = evaluate_split(
-                &cluster.tris,
-                triangles,
-                vertices,
-                cluster.sphere.radius,
-                epsilon,
-            ) {
-                if split.gain_ratio > best_gain_ratio {
-                    best_gain_ratio = split.gain_ratio;
-                    best_index = Some(idx);
-                    best_split = Some(split);
-                }
-            }
+    while heap.len() + frozen.len() < max_spheres {
+        let Some(cluster) = heap.pop() else {
+            break;
+        };
+        if cluster.tris.len() < 2 {
+            frozen.push(cluster);
+            continue;
         }
-
-        let Some(best_index) = best_index else {
-            break;
+        let split = evaluate_best_split(
+            &cluster.tris,
+            triangles,
+            vertices,
+            cluster.sphere.radius,
+            epsilon,
+        );
+        let Some(split) = split else {
+            frozen.push(cluster);
+            continue;
         };
-        let Some(best_split) = best_split else {
-            break;
-        };
-
-        clusters.swap_remove(best_index);
-        clusters.push(Cluster {
-            tris: best_split.left_tris,
-            sphere: best_split.left_sphere,
+        let threshold = min_gain_abs.max(min_gain_ratio * cluster.sphere.radius);
+        if split.gain_abs < threshold {
+            frozen.push(cluster);
+            continue;
+        }
+        heap.push(Cluster {
+            tris: split.left_tris,
+            sphere: split.left_sphere,
         });
-        clusters.push(Cluster {
-            tris: best_split.right_tris,
-            sphere: best_split.right_sphere,
+        heap.push(Cluster {
+            tris: split.right_tris,
+            sphere: split.right_sphere,
         });
     }
 
+    let mut clusters = Vec::with_capacity(heap.len() + frozen.len());
+    clusters.extend(heap.into_iter());
+    clusters.extend(frozen);
     clusters.into_iter().map(|c| c.sphere).collect()
 }
 
@@ -343,13 +405,21 @@ fn hello_from_bin() -> String {
     "Hello from urdf-spherizer!".to_string()
 }
 
-#[pyfunction]
+#[pyfunction(signature = (
+    vertices,
+    indices,
+    max_spheres,
+    min_gain_ratio = None,
+    epsilon = None,
+    min_gain_abs = None
+))]
 fn spherize_mesh(
     vertices: PyReadonlyArray2<f32>,
     indices: PyReadonlyArray2<u32>,
     max_spheres: usize,
     min_gain_ratio: Option<f32>,
     epsilon: Option<f32>,
+    min_gain_abs: Option<f32>,
 ) -> PyResult<Vec<([f32; 3], f32)>> {
     let vertices = vertices.as_array();
     let indices = indices.as_array();
@@ -393,7 +463,15 @@ fn spherize_mesh(
 
     let min_gain_ratio = min_gain_ratio.unwrap_or(0.02);
     let epsilon = epsilon.unwrap_or(1.0e-6);
-    let spheres = spherize_mesh_impl(&verts, &triangles, max_spheres, min_gain_ratio, epsilon);
+    let min_gain_abs = min_gain_abs.unwrap_or(0.0);
+    let spheres = spherize_mesh_impl(
+        &verts,
+        &triangles,
+        max_spheres,
+        min_gain_ratio,
+        min_gain_abs,
+        epsilon,
+    );
     Ok(spheres
         .into_iter()
         .map(|sphere| (sphere.center.into(), sphere.radius))

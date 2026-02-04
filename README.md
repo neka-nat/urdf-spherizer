@@ -7,7 +7,7 @@ Usage
 -----
 
 ```bash
-uvx urdf-spherizer path/to/model.urdf -o path/to/model.spheres.urdf --max-spheres 16
+uvx urdf-spherizer path/to/model.urdf -o path/to/model.spheres.urdf --max-spheres 64 --margin 0.002
 ```
 
 Optional visualization with rerun:
