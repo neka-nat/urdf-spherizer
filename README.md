@@ -25,5 +25,3 @@ uvx urdf-spherizer path/to/model.urdf --package-dir my_robot=/path/to/my_robot
 
 Results
 --------
-
-![Results](assets/result.png)
